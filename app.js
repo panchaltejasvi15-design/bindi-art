@@ -12,6 +12,8 @@ const state = {
   brightness: 0,            // Adjustment offset (-100 to 100)
   contrast: 0,              // Adjustment offset (-100 to 100)
   densityFactor: 40,        // Scale/detail limit (used to downscale grid if needed)
+  posterizationZones: 4,    // Number of discrete tonal zones (3 to 6)
+  bgThreshold: 8,           // Background suppression threshold 0-30 (%)
   invertMapping: true,      // True: Darker = Larger bindis, False: Lighter = Larger bindis
   colorCodePrint: false,    // True: Faintly color-code numbers on print pages
   activeTab: 'preview-panel', // Active workspace tab
@@ -20,6 +22,7 @@ const state = {
   gridCols: 0,
   gridRows: 0,
   physicalCellSizeMM: 16,   // Max bindi size + cell padding
+  hexRowHeightMM: 13.856,   // Vertical cell spacing in mm for hex packing
   tiledPages: [],            // List of page data for printing/previewing
   zoomLevel: 1.0,
   panX: 0,
@@ -72,6 +75,10 @@ const el = {
   valBrightness: document.getElementById('val-brightness'),
   sliderThreshold: document.getElementById('slider-threshold'),
   valThreshold: document.getElementById('val-threshold'),
+  sliderPosterization: document.getElementById('slider-posterization'),
+  valPosterization: document.getElementById('val-posterization'),
+  sliderBgThreshold: document.getElementById('slider-bg-threshold'),
+  valBgThreshold: document.getElementById('val-bg-threshold'),
   checkInvert: document.getElementById('check-invert'),
   checkColorPrint: document.getElementById('check-color-print'),
   
@@ -189,6 +196,18 @@ function setupEventListeners() {
   el.sliderThreshold.addEventListener('input', (e) => {
     state.densityFactor = parseInt(e.target.value, 10);
     el.valThreshold.textContent = state.densityFactor + '%';
+    processAndRender();
+  });
+
+  el.sliderPosterization.addEventListener('input', (e) => {
+    state.posterizationZones = parseInt(e.target.value, 10);
+    el.valPosterization.textContent = state.posterizationZones;
+    processAndRender();
+  });
+
+  el.sliderBgThreshold.addEventListener('input', (e) => {
+    state.bgThreshold = parseInt(e.target.value, 10);
+    el.valBgThreshold.textContent = state.bgThreshold + '%';
     processAndRender();
   });
 
@@ -361,6 +380,7 @@ function calculateGridDimensions() {
   // Max physical size of cell (largest bindi diameter + physical grid padding)
   const maxBindi = Math.max(...state.bindiSizes);
   state.physicalCellSizeMM = maxBindi + state.cellPadding;
+  state.hexRowHeightMM = state.physicalCellSizeMM * 0.8660254;
   
   // Real world canvas sizes in millimeters
   const canvasWidthMM = state.canvasWidthM * 1000;
@@ -383,7 +403,8 @@ function calculateGridDimensions() {
   
   // Calculate maximum physical grid size
   let cols = Math.floor(activeWidthMM / state.physicalCellSizeMM);
-  let rows = Math.floor(activeHeightMM / state.physicalCellSizeMM);
+  let rows = Math.floor((activeHeightMM - state.physicalCellSizeMM) / state.hexRowHeightMM) + 1;
+  if (rows < 1) rows = 1;
   
   // Scale resolution dynamically based on Density slider
   // 100% means the maximum resolution physical sizes can support.
@@ -435,21 +456,29 @@ function sampleImageToGrid() {
     hiGray[i] = Math.max(0, Math.min(255, hiGray[i] + sharpStrength * (hiGray[i] - blurred[i])));
   }
   
-  // ---- STEP C: Downsample sharpened hi-res to grid resolution (area average) ----
+  // ---- STEP C: Downsample sharpened hi-res to grid resolution with Hex horizontal offset ----
   const grayGrid = new Float32Array(cols * rows);
   for (let gy = 0; gy < rows; gy++) {
+    const isOdd = (gy % 2 === 1);
     for (let gx = 0; gx < cols; gx++) {
       let sum = 0;
+      let count = 0;
       for (let dy = 0; dy < hiResFactor; dy++) {
+        const hY = gy * hiResFactor + dy;
+        if (hY >= hiH) continue;
         for (let dx = 0; dx < hiResFactor; dx++) {
-          sum += hiGray[(gy * hiResFactor + dy) * hiW + (gx * hiResFactor + dx)];
+          // Horizontal offset of 0.5 * cell width on odd rows
+          const hX = Math.round(gx * hiResFactor + dx + (isOdd ? hiResFactor / 2 : 0));
+          if (hX >= hiW) continue;
+          sum += hiGray[hY * hiW + hX];
+          count++;
         }
       }
-      grayGrid[gy * cols + gx] = sum / (hiResFactor * hiResFactor);
+      grayGrid[gy * cols + gx] = count > 0 ? (sum / count) : 128;
     }
   }
   
-  // ---- STEP D: Histogram Equalization ----
+  // ---- STEP D: Histogram Equalization (Dynamic Blend) ----
   // Build a cumulative distribution function to spread tonal values evenly
   const histogram = new Uint32Array(256);
   for (let i = 0; i < grayGrid.length; i++) {
@@ -474,18 +503,49 @@ function sampleImageToGrid() {
     eqLUT[i] = totalPixels > 1 ? ((cdf[i] - cdfMin) / (totalPixels - cdfMin)) * 255 : i;
   }
   
-  // Apply equalization with a blend factor (don't go full equalization, it can be harsh)
-  const eqBlend = 0.6; // 0 = original, 1 = fully equalized
+  // Compute grayscale variance to determine EQ blend strength dynamically
+  let sumVal = 0;
+  let sumValSq = 0;
+  for (let i = 0; i < grayGrid.length; i++) {
+    sumVal += grayGrid[i];
+    sumValSq += grayGrid[i] * grayGrid[i];
+  }
+  const meanVal = sumVal / grayGrid.length;
+  const variance = (sumValSq / grayGrid.length) - (meanVal * meanVal);
+  
+  // Dynamic blend: low-contrast images (variance < 1500) get heavier EQ (0.85),
+  // high-contrast images (variance > 3000) get lighter EQ (0.50),
+  // otherwise linearly interpolate between 0.85 and 0.50
+  let eqBlend;
+  if (variance < 1500) {
+    eqBlend = 0.85;
+  } else if (variance > 3000) {
+    eqBlend = 0.50;
+  } else {
+    eqBlend = 0.85 - (0.35 * (variance - 1500) / (3000 - 1500));
+  }
+  
   for (let i = 0; i < grayGrid.length; i++) {
     const orig = grayGrid[i];
     const eq = eqLUT[Math.round(orig)];
     grayGrid[i] = orig * (1 - eqBlend) + eq * eqBlend;
   }
   
-  // ---- STEP E: Sigmoid Tone Curve ----
+  // ---- STEP E: Tonal Posterization ----
+  // Crush continuous shades into discrete zones (3 to 6)
+  // Runs BEFORE sigmoid so zone boundaries are evenly spaced on the linear scale
+  const numZones = state.posterizationZones || 4;
+  const zoneWidth = 256 / numZones;
+  for (let i = 0; i < grayGrid.length; i++) {
+    const val = grayGrid[i];
+    const zoneIndex = Math.max(0, Math.min(numZones - 1, Math.floor(val / zoneWidth)));
+    grayGrid[i] = (zoneIndex + 0.5) * zoneWidth;
+  }
+  
+  // ---- STEP E.5: Sigmoid Tone Curve ----
   // Applies an S-curve to push highlights brighter and shadows darker
-  // This dramatically increases perceived contrast in the final bindi portrait
-  const sigmoidSteepness = 8; // Higher = more aggressive contrast push
+  // Runs AFTER posterization to add contrast separation between discrete zones
+  const sigmoidSteepness = 5;
   const sigmoidMidpoint = 0.5;
   
   for (let i = 0; i < grayGrid.length; i++) {
@@ -495,12 +555,11 @@ function sampleImageToGrid() {
     grayGrid[i] = n * 255;
   }
   
-  // ---- STEP F: Quantize to Bindi Levels ----
+  // ---- STEP F: Quantize to Bindi Levels with Size Boost ----
   state.gridData = Array.from({ length: rows }, () => new Uint8Array(cols));
   
-  // Background suppression threshold: pixels lighter than this get no bindi (level 0)
-  // Higher value = more aggressive background removal
-  const bgThreshold = 0.15;
+  // Background suppression threshold from UI slider (0–30%)
+  const bgThreshold = state.bgThreshold / 100;
   
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
@@ -513,11 +572,9 @@ function sampleImageToGrid() {
         const darkness = 1 - normalized;
         
         if (darkness > bgThreshold) {
-          // Non-linear quantization: use power curve for better level distribution
-          // Map darkness (bgThreshold..1) to (0..1), then power-curve, then to levels
           const mapped = (darkness - bgThreshold) / (1 - bgThreshold);
-          // Power curve: slightly boost mid-darks to give more weight to medium bindis
-          const curved = Math.pow(mapped, 0.85);
+          // Size boost exponent: gentler curve to preserve midtone differentiation
+          const curved = Math.pow(mapped, 0.75);
           level = Math.ceil(curved * state.bindiCount);
           level = Math.max(1, Math.min(state.bindiCount, level));
         }
@@ -525,7 +582,7 @@ function sampleImageToGrid() {
         // Lighter pixels = Larger bindis
         if (normalized > bgThreshold) {
           const mapped = (normalized - bgThreshold) / (1 - bgThreshold);
-          const curved = Math.pow(mapped, 0.85);
+          const curved = Math.pow(mapped, 0.6);
           level = Math.ceil(curved * state.bindiCount);
           level = Math.max(1, Math.min(state.bindiCount, level));
         }
@@ -534,6 +591,72 @@ function sampleImageToGrid() {
       state.gridData[y][x] = level;
     }
   }
+  
+  // ---- STEP G: Tonal Locking / Local Smoothing (Hex-aware Median Filter) ----
+  // Run 2 passes of neighborhood smoothing to consolidate shadow masses
+  for (let pass = 0; pass < 2; pass++) {
+    const tempGrid = state.gridData.map(row => new Uint8Array(row));
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const currentLevel = tempGrid[y][x];
+        if (currentLevel === 0) continue;
+        
+        const neighbors = getHexNeighbors(y, x, rows, cols);
+        const neighborLevels = [];
+        for (const n of neighbors) {
+          neighborLevels.push(tempGrid[n.r][n.c]);
+        }
+        
+        if (neighborLevels.length === 0) continue;
+        
+        // Include the cell's own level to prevent over-smoothing
+        neighborLevels.push(currentLevel);
+        
+        // Find median
+        neighborLevels.sort((a, b) => a - b);
+        const median = neighborLevels[Math.floor(neighborLevels.length / 2)];
+        
+        // Apply lock if current differs from neighborhood trend by more than 1 level
+        if (Math.abs(currentLevel - median) > 1) {
+          state.gridData[y][x] = median;
+        }
+      }
+    }
+  }
+}
+
+// Helper: Get neighboring coordinates in staggered hexagonal topology
+function getHexNeighbors(r, c, rows, cols) {
+  const neighbors = [];
+  // Horizontal neighbors
+  if (c > 0) neighbors.push({ r, c: c - 1 });
+  if (c < cols - 1) neighbors.push({ r, c: c + 1 });
+  
+  const isOddRow = (r % 2 === 1);
+  
+  // Upper row
+  if (r > 0) {
+    if (isOddRow) {
+      neighbors.push({ r: r - 1, c });
+      if (c < cols - 1) neighbors.push({ r: r - 1, c: c + 1 });
+    } else {
+      if (c > 0) neighbors.push({ r: r - 1, c: c - 1 });
+      neighbors.push({ r: r - 1, c });
+    }
+  }
+  
+  // Lower row
+  if (r < rows - 1) {
+    if (isOddRow) {
+      neighbors.push({ r: r + 1, c });
+      if (c < cols - 1) neighbors.push({ r: r + 1, c: c + 1 });
+    } else {
+      if (c > 0) neighbors.push({ r: r + 1, c: c - 1 });
+      neighbors.push({ r: r + 1, c });
+    }
+  }
+  
+  return neighbors;
 }
 
 // Gaussian blur helper (5x5 kernel, separable for performance)
@@ -580,8 +703,8 @@ function calculateTiledLayout() {
   
   // Calculate how many cells fit on a single page
   const cellWidthMM = state.physicalCellSizeMM;
-  const colsPerPage = Math.floor(printableWidthMM / cellWidthMM);
-  const rowsPerPage = Math.floor(printableHeightMM / cellWidthMM);
+  const colsPerPage = Math.max(1, Math.floor((printableWidthMM - (cellWidthMM * 0.5)) / cellWidthMM));
+  const rowsPerPage = Math.max(1, Math.floor((printableHeightMM - cellWidthMM) / state.hexRowHeightMM) + 1);
   
   if (colsPerPage <= 0 || rowsPerPage <= 0) {
     alert("Warning: Bindi sizes are too large to fit on a single page of this paper size! Choose a larger paper size.");
@@ -645,10 +768,11 @@ function renderDigitalPreview() {
   const cols = state.gridCols;
   const rows = state.gridRows;
   
-  // Scale canvas context
+  // Scale canvas context with hex staggered row height
   const cellRenderSize = 12; // cell virtual diameter in pixels
+  const hexRowRenderHeight = cellRenderSize * 0.8660254;
   canvas.width = cols * cellRenderSize;
-  canvas.height = rows * cellRenderSize;
+  canvas.height = Math.round((rows - 1) * hexRowRenderHeight + cellRenderSize);
   
   const ctx = canvas.getContext('2d');
   
@@ -656,26 +780,43 @@ function renderDigitalPreview() {
   ctx.fillStyle = '#fbf9f6';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   
-  // Subtle canvas grid coordinates
+  // Subtle canvas grid coordinates (Hexagonal staggered grid lines)
   ctx.strokeStyle = '#eae6e0';
   ctx.lineWidth = 0.5;
-  for (let x = 0; x <= cols; x++) {
+  
+  // Draw horizontal lines
+  for (let y = 0; y <= rows; y++) {
+    const yPos = y * hexRowRenderHeight;
     ctx.beginPath();
-    ctx.moveTo(x * cellRenderSize, 0);
-    ctx.lineTo(x * cellRenderSize, canvas.height);
+    ctx.moveTo(0, yPos);
+    ctx.lineTo(canvas.width, yPos);
     ctx.stroke();
   }
-  for (let y = 0; y <= rows; y++) {
-    ctx.beginPath();
-    ctx.moveTo(0, y * cellRenderSize);
-    ctx.lineTo(canvas.width, y * cellRenderSize);
-    ctx.stroke();
+  
+  // Draw vertical staggered line segments
+  for (let y = 0; y < rows; y++) {
+    const yPosStart = y * hexRowRenderHeight;
+    const yPosEnd = yPosStart + hexRowRenderHeight;
+    const isOdd = (y % 2 === 1);
+    const xShift = isOdd ? cellRenderSize / 2 : 0;
+    
+    for (let x = 0; x <= cols; x++) {
+      const xPos = x * cellRenderSize + xShift;
+      ctx.beginPath();
+      ctx.moveTo(xPos, yPosStart);
+      ctx.lineTo(xPos, yPosEnd);
+      ctx.stroke();
+    }
   }
   
   // Draw Bindis
   const bindiColorType = state.bindiColor;
   
   for (let y = 0; y < rows; y++) {
+    const isOdd = (y % 2 === 1);
+    const xShift = isOdd ? cellRenderSize / 2 : 0;
+    const centerY = y * hexRowRenderHeight + cellRenderSize / 2;
+    
     for (let x = 0; x < cols; x++) {
       const level = state.gridData[y][x];
       if (level === 0) continue;
@@ -686,8 +827,7 @@ function renderDigitalPreview() {
       const diameterRatio = bindiDiameterMM / state.physicalCellSizeMM;
       const bindiRadiusPx = (cellRenderSize * diameterRatio) / 2;
       
-      const centerX = x * cellRenderSize + cellRenderSize / 2;
-      const centerY = y * cellRenderSize + cellRenderSize / 2;
+      const centerX = x * cellRenderSize + cellRenderSize / 2 + xShift;
       
       // Select Color
       let color;
@@ -808,12 +948,13 @@ function drawMiniPagePreview(canvas, page) {
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   
-  const cellWidthPx = canvas.width / page.widthCells;
-  const cellHeightPx = canvas.height / page.heightCells;
+  const cellWidthPx = canvas.width / (page.widthCells + 0.5);
+  const hexRowHeightPx = cellWidthPx * 0.8660254;
   
   ctx.fillStyle = '#d11a2a';
   for (let r = 0; r < page.heightCells; r++) {
     const globalRow = page.startRow + r;
+    const isOdd = (globalRow % 2 === 1);
     for (let c = 0; c < page.widthCells; c++) {
       const globalCol = page.startCol + c;
       
@@ -822,9 +963,9 @@ function drawMiniPagePreview(canvas, page) {
         const bindiDiameterMM = state.bindiSizes[level - 1];
         const diameterRatio = bindiDiameterMM / state.physicalCellSizeMM;
         
-        const pxRadius = Math.max(1, (Math.min(cellWidthPx, cellHeightPx) * diameterRatio) / 2);
-        const cx = c * cellWidthPx + cellWidthPx / 2;
-        const cy = r * cellHeightPx + cellHeightPx / 2;
+        const pxRadius = Math.max(1, (cellWidthPx * diameterRatio) / 2);
+        const cx = (c + (isOdd ? 0.5 : 0)) * cellWidthPx + cellWidthPx / 2;
+        const cy = r * hexRowHeightPx + cellWidthPx / 2;
         
         ctx.beginPath();
         ctx.arc(cx, cy, pxRadius, 0, Math.PI * 2);
@@ -976,13 +1117,24 @@ function preparePrintLayout(calibrationOnly = false) {
     const grid = document.createElement('div');
     grid.className = 'print-grid-container';
     
+    // Set grid container to block and position relative for absolute positioning of cells
+    grid.style.display = 'block';
+    grid.style.border = 'none';
+    grid.style.position = 'relative';
+    
     // Physical size of cells
     const cellWidthMM = state.physicalCellSizeMM;
-    grid.style.gridTemplateColumns = `repeat(${p.widthCells}, ${cellWidthMM}mm)`;
-    grid.style.gridTemplateRows = `repeat(${p.heightCells}, ${cellWidthMM}mm)`;
+    const cellRowHeightMM = state.hexRowHeightMM;
+    
+    const totalGridWidthMM = (p.widthCells + 0.5) * cellWidthMM;
+    const totalGridHeightMM = (p.heightCells - 1) * cellRowHeightMM + cellWidthMM;
+    grid.style.width = `${totalGridWidthMM}mm`;
+    grid.style.height = `${totalGridHeightMM}mm`;
     
     for (let r = 0; r < p.heightCells; r++) {
       const globalRow = p.startRow + r;
+      const isOdd = (globalRow % 2 === 1);
+      
       for (let c = 0; c < p.widthCells; c++) {
         const globalCol = p.startCol + c;
         
@@ -990,6 +1142,14 @@ function preparePrintLayout(calibrationOnly = false) {
         cell.className = 'print-cell';
         cell.style.width = `${cellWidthMM}mm`;
         cell.style.height = `${cellWidthMM}mm`;
+        
+        // Position cell absolutely
+        cell.style.position = 'absolute';
+        cell.style.border = '0.15mm solid #bbb';
+        const leftMM = (c + (isOdd ? 0.5 : 0)) * cellWidthMM;
+        const topMM = r * cellRowHeightMM;
+        cell.style.left = `${leftMM}mm`;
+        cell.style.top = `${topMM}mm`;
         
         const level = state.gridData[globalRow][globalCol];
         
@@ -1071,12 +1231,23 @@ function prepareSinglePagePrint(page) {
   const grid = document.createElement('div');
   grid.className = 'print-grid-container';
   
+  // Set grid container to block and position relative for absolute positioning of cells
+  grid.style.display = 'block';
+  grid.style.border = 'none';
+  grid.style.position = 'relative';
+  
   const cellWidthMM = state.physicalCellSizeMM;
-  grid.style.gridTemplateColumns = `repeat(${page.widthCells}, ${cellWidthMM}mm)`;
-  grid.style.gridTemplateRows = `repeat(${page.heightCells}, ${cellWidthMM}mm)`;
+  const cellRowHeightMM = state.hexRowHeightMM;
+  
+  const totalGridWidthMM = (page.widthCells + 0.5) * cellWidthMM;
+  const totalGridHeightMM = (page.heightCells - 1) * cellRowHeightMM + cellWidthMM;
+  grid.style.width = `${totalGridWidthMM}mm`;
+  grid.style.height = `${totalGridHeightMM}mm`;
   
   for (let r = 0; r < page.heightCells; r++) {
     const globalRow = page.startRow + r;
+    const isOdd = (globalRow % 2 === 1);
+    
     for (let c = 0; c < page.widthCells; c++) {
       const globalCol = page.startCol + c;
       
@@ -1084,6 +1255,14 @@ function prepareSinglePagePrint(page) {
       cell.className = 'print-cell';
       cell.style.width = `${cellWidthMM}mm`;
       cell.style.height = `${cellWidthMM}mm`;
+      
+      // Position cell absolutely
+      cell.style.position = 'absolute';
+      cell.style.border = '0.15mm solid #bbb';
+      const leftMM = (c + (isOdd ? 0.5 : 0)) * cellWidthMM;
+      const topMM = r * cellRowHeightMM;
+      cell.style.left = `${leftMM}mm`;
+      cell.style.top = `${topMM}mm`;
       
       const level = state.gridData[globalRow][globalCol];
       
