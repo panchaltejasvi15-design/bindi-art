@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bindi Portrait Generator - Scale-Accurate Halftone Art Planner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Main Application Wrapper (Hidden during printing) -->
+  <div id="app-wrapper">
+    <header class="app-header">
+      <div class="logo-area">
+        <div class="bindi-logo-icon"></div>
+        <div>
+          <h1>Bindi Portrait Generator</h1>
+          <p class="subtitle">Convert photos into scale-accurate physical bindi templates &amp; shopping lists</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="btn-print-calibration" class="btn btn-secondary">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z" fill="currentColor"/></svg>
+          Print Test Page
+        </button>
+        <button id="btn-print-full" class="btn btn-primary">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z" fill="currentColor"/></svg>
+          Print Full Template
+        </button>
+      </div>
+    </header>
+
+    <div class="app-layout">
+      <!-- Control Sidebar -->
+      <aside class="app-sidebar">
+        <!-- Step 1: Image Upload -->
+        <section class="settings-card">
+          <h2 class="card-title"><span class="step-badge">1</span> Upload Image</h2>
+          <div id="dropzone" class="upload-dropzone">
+            <input type="file" id="file-input" accept="image/*">
+            <div class="dropzone-content">
+              <svg class="upload-icon" viewBox="0 0 24 24" width="48" height="48"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z" fill="currentColor"/></svg>
+              <p class="upload-text">Drag &amp; drop your image here or <span>browse</span></p>
+              <p class="upload-limits">Supports JPEG, PNG, WEBP</p>
+            </div>
+            <div id="upload-preview-container" class="hidden">
+              <img id="upload-preview" alt="Preview">
+              <button id="btn-remove-image" class="btn-remove" title="Remove image">&times;</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Step 2: Dimensions & Paper Configuration -->
+        <section class="settings-card">
+          <h2 class="card-title"><span class="step-badge">2</span> Canvas &amp; Paper Size</h2>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="input-canvas-width">Width (meters)</label>
+              <input type="number" id="input-canvas-width" value="2.0" step="0.1" min="0.1">
+            </div>
+            <div class="form-group">
+              <label for="input-canvas-height">Height (meters)</label>
+              <input type="number" id="input-canvas-height" value="1.0" step="0.1" min="0.1">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="select-paper-size">Target Printer Paper</label>
+            <select id="select-paper-size">
+              <option value="a4-portrait">A4 Portrait (210 x 297 mm)</option>
+              <option value="a4-landscape" selected>A4 Landscape (297 x 210 mm)</option>
+              <option value="a3-portrait">A3 Portrait (297 x 420 mm)</option>
+              <option value="a3-landscape">A3 Landscape (420 x 297 mm)</option>
+            </select>
+          </div>
+        </section>
+
+        <!-- Step 3: Bindi Sizes Configuration -->
+        <section class="settings-card">
+          <h2 class="card-title"><span class="step-badge">3</span> Bindi Size Calibration</h2>
+          <div class="form-group">
+            <div class="slider-header">
+              <label for="slider-bindi-count">Number of Sizes</label>
+              <span id="val-bindi-count" class="slider-value">5</span>
+            </div>
+            <input type="range" id="slider-bindi-count" min="3" max="8" value="5" step="1">
+          </div>
+          
+          <div class="bindi-sizes-list">
+            <div class="sizes-header">
+              <span>Bindi Level</span>
+              <span>Diameter (mm)</span>
+            </div>
+            <div id="bindi-inputs-container">
+              <!-- Dynamically populated size list -->
+            </div>
+          </div>
+
+          <div class="form-group mt-1">
+            <div class="slider-header">
+              <label for="slider-grid-padding">Cell Margin / Spacing (mm)</label>
+              <span id="val-grid-padding" class="slider-value">1.0</span>
+            </div>
+            <input type="range" id="slider-grid-padding" min="0" max="5" value="1.0" step="0.5">
+          </div>
+        </section>
+
+        <!-- Step 4: Image Adjustments -->
+        <section class="settings-card">
+          <h2 class="card-title"><span class="step-badge">4</span> Image Adjustment</h2>
+          <div class="form-group">
+            <div class="slider-header">
+              <label for="slider-contrast">Contrast</label>
+              <span id="val-contrast" class="slider-value">0%</span>
+            </div>
+            <input type="range" id="slider-contrast" min="-100" max="100" value="0">
+          </div>
+          <div class="form-group">
+            <div class="slider-header">
+              <label for="slider-brightness">Brightness</label>
+              <span id="val-brightness" class="slider-value">0%</span>
+            </div>
+            <input type="range" id="slider-brightness" min="-100" max="100" value="0">
+          </div>
+          <div class="form-group">
+            <div class="slider-header">
+              <label for="slider-threshold">Density / Scale Limit</label>
+              <span id="val-threshold" class="slider-value">Auto</span>
+            </div>
+            <input type="range" id="slider-threshold" min="10" max="100" value="40" title="Adjusts how detailed the portrait is by scaling rows/cols">
+          </div>
+          <div class="checkbox-group">
+            <label class="checkbox-container">
+              <input type="checkbox" id="check-invert" checked>
+              <span class="checkmark"></span>
+              Darker pixels = Larger bindis (Recommended)
+            </label>
+          </div>
+          <div class="checkbox-group">
+            <label class="checkbox-container">
+              <input type="checkbox" id="check-color-print">
+              <span class="checkmark"></span>
+              Faintly color-code grid numbers on print sheets
+            </label>
+          </div>
+        </section>
+      </aside>
+
+      <!-- Main Workspace -->
+      <main class="app-main">
+        <!-- View Tabs -->
+        <div class="workspace-tabs">
+          <button id="tab-preview" class="tab-btn active" data-tab="preview-panel">Digital Art Preview</button>
+          <button id="tab-grid" class="tab-btn" data-tab="grid-panel">Tiled Print Preview</button>
+        </div>
+
+        <!-- Tab Panels -->
+        <div class="tab-content">
+          <!-- Digital Art Preview Panel -->
+          <div id="preview-panel" class="tab-panel active">
+            <div class="canvas-container">
+              <canvas id="digital-canvas"></canvas>
+              <div id="canvas-placeholder">
+                <svg viewBox="0 0 24 24" width="64" height="64"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z" fill="currentColor"/></svg>
+                <p>Upload an image to render the Bindi Portrait simulation</p>
+              </div>
+            </div>
+            <div class="canvas-controls">
+              <button id="btn-fit-screen" class="btn btn-secondary btn-sm">Fit Screen</button>
+              <div class="color-picker-group">
+                <label>Bindi Color:</label>
+                <div class="color-options">
+                  <button class="color-swatch active" data-color="maroon" style="background-color: #800020;" title="Maroon"></button>
+                  <button class="color-swatch" data-color="red" style="background-color: #d11a2a;" title="Crimson Red"></button>
+                  <button class="color-swatch" data-color="black" style="background-color: #1a1a1a;" title="Black"></button>
+                  <button class="color-swatch" data-color="gold" style="background-color: #d4af37;" title="Metallic Gold"></button>
+                  <button class="color-swatch" data-color="multi" style="background: linear-gradient(45deg, red, yellow, blue, green);" title="Multi-color"></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tiled Print Preview Panel -->
+          <div id="grid-panel" class="tab-panel">
+            <div class="grid-layout-info-banner">
+              <svg viewBox="0 0 24 24" width="20" height="20"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 8 10 8-4.48 8-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" fill="currentColor"/></svg>
+              <span>This panel simulates the printable pages. Hover over pages to see their coordinate index. Only pages with bindis will print.</span>
+            </div>
+            <div class="tiled-grid-viewport">
+              <div id="tiled-pages-container">
+                <!-- Dynamically populated page thumbnails -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- Stats & Shopping List Dashboard (Right Sidebar) -->
+      <aside class="app-dashboard">
+        <section class="dashboard-card">
+          <h2 class="card-title">Project Stats</h2>
+          <div class="stats-grid">
+            <div class="stat-item">
+              <span class="stat-label">Canvas Dimensions</span>
+              <span id="stat-dimensions" class="stat-value">2.0m &times; 1.0m</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Grid Layout</span>
+              <span id="stat-grid-size" class="stat-value">0 &times; 0</span>
+            </div>
+            <div class="stat-item font-highlight">
+              <span class="stat-label">Total Bindis Needed</span>
+              <span id="stat-total-bindis" class="stat-value">0</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-label">Print Sheets Needed</span>
+              <span id="stat-sheets-count" class="stat-value">0 sheets</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="dashboard-card flex-grow">
+          <h2 class="card-title">Bindi Shopping List</h2>
+          <div class="shopping-list-container">
+            <table class="shopping-table">
+              <thead>
+                <tr>
+                  <th>Level / Size</th>
+                  <th>Diameter</th>
+                  <th>Count</th>
+                  <th>Ratio</th>
+                </tr>
+              </thead>
+              <tbody id="shopping-list-body">
+                <tr>
+                  <td colspan="4" class="empty-list-placeholder">Upload an image to calculate bindi totals</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="shopping-list-notes">
+            <p>💡 <strong>Pack Recommendation:</strong> Standard bindi packs contain about 50-100 bindis. We recommend buying an extra 10% for adjustments.</p>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <!-- Print Canvas Structure (Visible strictly in @media print) -->
+  <div id="print-container">
+    <!-- Printable pages will be injected here dynamically via JS -->
+  </div>
+
+  <!-- Main JavaScript File -->
+  <script src="app.js"></script>
+</body>
+</html>
