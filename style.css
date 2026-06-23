@@ -190,6 +190,22 @@ body {
   border-radius: 6px;
 }
 
+.btn-accent-alt {
+  background: linear-gradient(135deg, #0d9488, #10b981);
+  color: white;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
+}
+
+.btn-accent-alt:hover {
+  background: linear-gradient(135deg, #0f766e, #059669);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.45);
+}
+
+.btn-accent-alt:active {
+  transform: translateY(0);
+}
+
 /* ==========================================================================
    MAIN LAYOUT
    ========================================================================== */
@@ -964,6 +980,93 @@ input[type="range"]::-webkit-slider-thumb:hover {
   font-size: 0.72rem;
   color: var(--text-secondary);
   line-height: 1.35;
+}
+
+/* ==========================================================================
+   COMMUNITY MODE & TIME ESTIMATOR STYLES
+   ========================================================================== */
+.render-mode-selector {
+  display: flex;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 4px;
+  margin-bottom: 12px;
+}
+
+.mode-btn {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-family: var(--font-family-sans);
+  font-size: 0.85rem;
+  font-weight: 550;
+  cursor: pointer;
+  transition: all var(--transition-speed);
+}
+
+.mode-btn:hover {
+  color: var(--text-primary);
+}
+
+.mode-btn.active {
+  background-color: var(--accent-color);
+  color: white;
+  box-shadow: 0 2px 8px var(--accent-glow);
+}
+
+.border-top {
+  border-top: 1px solid var(--border-color);
+}
+
+.pt-1 {
+  padding-top: 16px;
+}
+
+.time-estimator-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.estimator-controls {
+  display: flex;
+  gap: 12px;
+}
+
+.control-subgroup {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.control-subgroup label {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+}
+
+.control-subgroup input {
+  padding: 6px 10px !important;
+  font-size: 0.8rem !important;
+}
+
+.estimated-time-display {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-top: 4px;
+}
+
+.highlight-yellow {
+  color: #eab308; /* yellow-500 */
 }
 
 /* ==========================================================================

@@ -26,7 +26,13 @@ const state = {
   tiledPages: [],            // List of page data for printing/previewing
   zoomLevel: 1.0,
   panX: 0,
-  panY: 0
+  panY: 0,
+  renderMode: 'standard',       // 'standard' or 'community'
+  communityBudget: 5000,        // 2500, 5000, or 9000
+  structurePreservation: true,  // boolean
+  midtoneCompression: 40,       // percentage (0-100)
+  numBuilders: 1,               // integer
+  builderSpeed: 400             // bindis per hour
 };
 
 // Paper Dimensions (Total dimensions in mm)
@@ -102,7 +108,21 @@ const el = {
   
   btnPrintFull: document.getElementById('btn-print-full'),
   btnPrintCalibration: document.getElementById('btn-print-calibration'),
-  printContainer: document.getElementById('print-container')
+  btnExportFullSizePdf: document.getElementById('btn-export-fullsize-pdf'),
+  printContainer: document.getElementById('print-container'),
+  
+  btnModeStandard: document.getElementById('btn-mode-standard'),
+  btnModeCommunity: document.getElementById('btn-mode-community'),
+  communitySettings: document.getElementById('community-settings'),
+  selectBindiBudget: document.getElementById('select-bindi-budget'),
+  checkStructurePreservation: document.getElementById('check-structure-preservation'),
+  sliderMidtoneCompression: document.getElementById('slider-midtone-compression'),
+  valMidtoneCompression: document.getElementById('val-midtone-compression'),
+  densitySliderContainer: document.getElementById('density-slider-container'),
+  
+  inputBuilders: document.getElementById('input-builders'),
+  inputSpeed: document.getElementById('input-speed'),
+  statCompletionTime: document.getElementById('stat-completion-time')
 };
 
 // ==========================================================================
@@ -257,6 +277,68 @@ function setupEventListeners() {
     preparePrintLayout(true); // Just the calibration test page
     window.print();
   });
+
+  // Full Size PDF Export
+  el.btnExportFullSizePdf.addEventListener('click', () => {
+    if (!state.originalImage) {
+      alert('Please upload an image first.');
+      return;
+    }
+    exportFullSizePDF();
+  });
+
+  // Mode Switching
+  el.btnModeStandard.addEventListener('click', () => {
+    el.btnModeStandard.classList.add('active');
+    el.btnModeCommunity.classList.remove('active');
+    el.communitySettings.classList.add('hidden');
+    el.densitySliderContainer.classList.remove('hidden');
+    state.renderMode = 'standard';
+    processAndRender();
+  });
+
+  el.btnModeCommunity.addEventListener('click', () => {
+    el.btnModeCommunity.classList.add('active');
+    el.btnModeStandard.classList.remove('active');
+    el.communitySettings.classList.remove('hidden');
+    el.densitySliderContainer.classList.add('hidden');
+    state.renderMode = 'community';
+    // Community mode: override bindi sizes to [2,3,4,5,6] mm
+    state.bindiCount = 5;
+    state.bindiSizes = [2, 3, 4, 5, 6];
+    el.sliderBindiCount.value = 5;
+    el.valBindiCount.textContent = 5;
+    initBindiSizesInputs();
+    processAndRender();
+  });
+
+  // Community Mode Inputs
+  el.selectBindiBudget.addEventListener('change', (e) => {
+    state.communityBudget = parseInt(e.target.value, 10);
+    processAndRender();
+  });
+
+  el.checkStructurePreservation.addEventListener('change', (e) => {
+    state.structurePreservation = e.target.checked;
+    processAndRender();
+  });
+
+  el.sliderMidtoneCompression.addEventListener('input', (e) => {
+    state.midtoneCompression = parseInt(e.target.value, 10);
+    el.valMidtoneCompression.textContent = state.midtoneCompression + '%';
+    processAndRender();
+  });
+
+  // Time Estimator Inputs
+  el.inputBuilders.addEventListener('input', (e) => {
+    state.numBuilders = Math.max(1, parseInt(e.target.value, 10) || 1);
+    updateDashboardStats();
+  });
+
+  el.inputSpeed.addEventListener('input', (e) => {
+    state.builderSpeed = Math.max(10, parseInt(e.target.value, 10) || 400);
+    updateDashboardStats();
+  });
 }
 
 // Initialize input fields for the bindi sizes
@@ -379,8 +461,6 @@ function processAndRender() {
 function calculateGridDimensions() {
   // Max physical size of cell (largest bindi diameter + physical grid padding)
   const maxBindi = Math.max(...state.bindiSizes);
-  state.physicalCellSizeMM = maxBindi + state.cellPadding;
-  state.hexRowHeightMM = state.physicalCellSizeMM * 0.8660254;
   
   // Real world canvas sizes in millimeters
   const canvasWidthMM = state.canvasWidthM * 1000;
@@ -401,14 +481,16 @@ function calculateGridDimensions() {
     activeWidthMM = canvasHeightMM * imgRatio;
   }
   
+  // Always use standard grid calculation for both modes
+  state.physicalCellSizeMM = maxBindi + state.cellPadding;
+  state.hexRowHeightMM = state.physicalCellSizeMM * 0.8660254;
+  
   // Calculate maximum physical grid size
   let cols = Math.floor(activeWidthMM / state.physicalCellSizeMM);
   let rows = Math.floor((activeHeightMM - state.physicalCellSizeMM) / state.hexRowHeightMM) + 1;
   if (rows < 1) rows = 1;
   
   // Scale resolution dynamically based on Density slider
-  // 100% means the maximum resolution physical sizes can support.
-  // Smaller percentages scale down the grid to place bindis further apart
   const scaling = state.densityFactor / 100;
   cols = Math.max(5, Math.round(cols * scaling));
   rows = Math.max(5, Math.round(rows * scaling));
@@ -422,7 +504,7 @@ function sampleImageToGrid() {
   const cols = state.gridCols;
   const rows = state.gridRows;
   
-  // ---- STEP A: Read image at a higher resolution for the unsharp mask ----
+  // ---- STEP A: Read image at a higher resolution ----
   // We sample at 3x then downscale, so the edge detection has sub-cell detail
   const hiResFactor = 3;
   const hiW = cols * hiResFactor;
@@ -448,7 +530,7 @@ function sampleImageToGrid() {
     hiGray[i] = Math.max(0, Math.min(255, g));
   }
   
-  // ---- STEP B: Unsharp Mask (edge enhancement) ----
+  // ---- STEP B: Unsharp Mask ----
   // Apply a 5x5 Gaussian blur, then sharpen: sharpened = original + strength * (original - blurred)
   const blurred = gaussianBlur5x5(hiGray, hiW, hiH);
   const sharpStrength = 1.5; // Controls how much edges are boosted
@@ -456,7 +538,7 @@ function sampleImageToGrid() {
     hiGray[i] = Math.max(0, Math.min(255, hiGray[i] + sharpStrength * (hiGray[i] - blurred[i])));
   }
   
-  // ---- STEP C: Downsample sharpened hi-res to grid resolution with Hex horizontal offset ----
+  // ---- STEP C: Downsample sharpened/filtered hi-res to grid resolution with Hex horizontal offset ----
   const grayGrid = new Float32Array(cols * rows);
   for (let gy = 0; gy < rows; gy++) {
     const isOdd = (gy % 2 === 1);
@@ -533,7 +615,6 @@ function sampleImageToGrid() {
   
   // ---- STEP E: Tonal Posterization ----
   // Crush continuous shades into discrete zones (3 to 6)
-  // Runs BEFORE sigmoid so zone boundaries are evenly spaced on the linear scale
   const numZones = state.posterizationZones || 4;
   const zoneWidth = 256 / numZones;
   for (let i = 0; i < grayGrid.length; i++) {
@@ -616,8 +697,9 @@ function sampleImageToGrid() {
         neighborLevels.sort((a, b) => a - b);
         const median = neighborLevels[Math.floor(neighborLevels.length / 2)];
         
-        // Apply lock if current differs from neighborhood trend by more than 1 level
-        if (Math.abs(currentLevel - median) > 1) {
+        const allowedDiff = 1;
+        
+        if (Math.abs(currentLevel - median) > allowedDiff) {
           state.gridData[y][x] = median;
         }
       }
@@ -659,6 +741,61 @@ function getHexNeighbors(r, c, rows, cols) {
   return neighbors;
 }
 
+// Bilateral Filter for edge-preserving smoothing
+// spaceSigma controls spatial distance, rangeSigma controls intensity difference
+function bilateralFilter(src, width, height, spaceSigma, rangeSigma) {
+  const dest = new Float32Array(width * height);
+  const kSize = Math.max(1, Math.round(spaceSigma * 2)); // e.g. 2 for spaceSigma = 1.0 -> 5x5 window
+  
+  // Precompute spatial weights
+  const spatialWeights = new Float32Array((kSize * 2 + 1) * (kSize * 2 + 1));
+  let wIdx = 0;
+  for (let dy = -kSize; dy <= kSize; dy++) {
+    for (let dx = -kSize; dx <= kSize; dx++) {
+      spatialWeights[wIdx++] = Math.exp(-(dx * dx + dy * dy) / (2 * spaceSigma * spaceSigma));
+    }
+  }
+  
+  const twoRangeSigmaSq = 2 * rangeSigma * rangeSigma;
+  
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const centerVal = src[y * width + x];
+      let sumVal = 0;
+      let sumWeight = 0;
+      
+      let spatialIdx = 0;
+      for (let dy = -kSize; dy <= kSize; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= height) {
+          spatialIdx += (kSize * 2 + 1);
+          continue;
+        }
+        
+        const rowOffset = ny * width;
+        for (let dx = -kSize; dx <= kSize; dx++) {
+          const nx = x + dx;
+          const sWeight = spatialWeights[spatialIdx++];
+          
+          if (nx >= 0 && nx < width) {
+            const neighborVal = src[rowOffset + nx];
+            const diff = neighborVal - centerVal;
+            const rWeight = Math.exp(-(diff * diff) / twoRangeSigmaSq);
+            const weight = sWeight * rWeight;
+            
+            sumVal += neighborVal * weight;
+            sumWeight += weight;
+          }
+        }
+      }
+      
+      dest[y * width + x] = sumWeight > 0 ? (sumVal / sumWeight) : centerVal;
+    }
+  }
+  
+  return dest;
+}
+
 // Gaussian blur helper (5x5 kernel, separable for performance)
 function gaussianBlur5x5(src, width, height) {
   // 5-tap Gaussian kernel (sigma ≈ 1.0): [1, 4, 6, 4, 1] / 16
@@ -697,9 +834,14 @@ function gaussianBlur5x5(src, width, height) {
 function calculateTiledLayout() {
   const paper = PAPER_SIZES[state.paperType];
   
-  // Calculate printable page dimensions in mm (excluding borders)
+  // The print header occupies top: 5mm + height: 12mm = 17mm, and the grid
+  // starts at top: 20mm (CSS .print-grid-container { top: 20mm; left: 8mm }).
+  // Bottom margin is PRINTER_MARGIN (8mm). So available grid height is:
+  //   paper.height - 20mm (grid top offset) - 8mm (bottom margin)
+  // Width uses PRINTER_MARGIN on both sides (grid starts at left: 8mm).
+  const GRID_TOP_OFFSET = 20; // mm — matches CSS .print-grid-container { top: 20mm }
   const printableWidthMM = paper.width - (PRINTER_MARGIN * 2);
-  const printableHeightMM = paper.height - (PRINTER_MARGIN * 2);
+  const printableHeightMM = paper.height - GRID_TOP_OFFSET - PRINTER_MARGIN;
   
   // Calculate how many cells fit on a single page
   const cellWidthMM = state.physicalCellSizeMM;
@@ -948,8 +1090,28 @@ function drawMiniPagePreview(canvas, page) {
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   
-  const cellWidthPx = canvas.width / (page.widthCells + 0.5);
-  const hexRowHeightPx = cellWidthPx * 0.8660254;
+  // Calculate the physical content dimensions of this page in mm
+  // Width: need to account for the hex offset on odd rows (extra 0.5 cell)
+  const cellMM = state.physicalCellSizeMM;
+  const hexRowMM = state.hexRowHeightMM;
+  const contentWidthMM = (page.widthCells + 0.5) * cellMM;
+  const contentHeightMM = (page.heightCells - 1) * hexRowMM + cellMM;
+  
+  // Compute scale factors for both axes, then use the smaller one so
+  // the entire content fits inside the canvas without clipping
+  const scaleX = canvas.width / contentWidthMM;
+  const scaleY = canvas.height / contentHeightMM;
+  const scale = Math.min(scaleX, scaleY);
+  
+  // Center the content within the canvas
+  const renderedWidth = contentWidthMM * scale;
+  const renderedHeight = contentHeightMM * scale;
+  const offsetX = (canvas.width - renderedWidth) / 2;
+  const offsetY = (canvas.height - renderedHeight) / 2;
+  
+  // Pixel dimensions of a single cell at this scale
+  const cellWidthPx = cellMM * scale;
+  const hexRowHeightPx = hexRowMM * scale;
   
   ctx.fillStyle = '#d11a2a';
   for (let r = 0; r < page.heightCells; r++) {
@@ -964,8 +1126,8 @@ function drawMiniPagePreview(canvas, page) {
         const diameterRatio = bindiDiameterMM / state.physicalCellSizeMM;
         
         const pxRadius = Math.max(1, (cellWidthPx * diameterRatio) / 2);
-        const cx = (c + (isOdd ? 0.5 : 0)) * cellWidthPx + cellWidthPx / 2;
-        const cy = r * hexRowHeightPx + cellWidthPx / 2;
+        const cx = offsetX + (c + (isOdd ? 0.5 : 0)) * cellWidthPx + cellWidthPx / 2;
+        const cy = offsetY + r * hexRowHeightPx + cellWidthPx / 2;
         
         ctx.beginPath();
         ctx.arc(cx, cy, pxRadius, 0, Math.PI * 2);
@@ -997,6 +1159,14 @@ function updateDashboardStats() {
   }
   
   el.statTotalBindis.textContent = totalBindis.toLocaleString();
+
+  // Update completion time estimation
+  const speed = state.builderSpeed || 400;
+  const builders = state.numBuilders || 1;
+  const totalHours = totalBindis / (builders * speed);
+  const hours = Math.floor(totalHours);
+  const minutes = Math.round((totalHours - hours) * 60);
+  el.statCompletionTime.textContent = totalBindis > 0 ? `${hours}h ${minutes}m` : '0h 0m';
   
   // Non-empty printable pages
   const printablePages = state.tiledPages.filter(p => !p.isEmpty).length;
@@ -1320,6 +1490,131 @@ function switchTab(tabId) {
   }
 }
 
+// ==========================================================================
+// FULL SIZE PDF EXPORT (SINGLE PAGE, EXACT CANVAS DIMENSIONS)
+// ==========================================================================
+
+function exportFullSizePDF() {
+  // Access jsPDF from the UMD global
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    alert('PDF library not loaded. Please hard-refresh the page (Ctrl+Shift+R) and try again.');
+    console.error('jsPDF library not available. window.jspdf =', window.jspdf);
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+
+  try {
+
+  // Canvas dimensions in mm
+  const canvasWidthMM = state.canvasWidthM * 1000;
+  const canvasHeightMM = state.canvasHeightM * 1000;
+  
+  // Determine orientation for jsPDF (it needs to know which is wider)
+  const orientation = canvasWidthMM >= canvasHeightMM ? 'landscape' : 'portrait';
+  
+  // Create the PDF with exact canvas dimensions as the page size
+  const doc = new jsPDF({
+    orientation: orientation,
+    unit: 'mm',
+    format: [canvasWidthMM, canvasHeightMM]
+  });
+  
+  // Explicitly set font to helvetica to avoid ZapfDingbats warnings
+  doc.setFont('helvetica', 'normal');
+  
+  // Physical grid parameters
+  const cellSizeMM = state.physicalCellSizeMM;
+  const hexRowHeightMM = state.hexRowHeightMM;
+  const cols = state.gridCols;
+  const rows = state.gridRows;
+  
+  // Calculate the full grid physical extent
+  const gridWidthMM = (cols + 0.5) * cellSizeMM;
+  const gridHeightMM = (rows - 1) * hexRowHeightMM + cellSizeMM;
+  
+  // Center the grid on the page
+  const offsetX = (canvasWidthMM - gridWidthMM) / 2;
+  const offsetY = (canvasHeightMM - gridHeightMM) / 2;
+  
+  // Pre-compute font size once (used for all level numbers)
+  const fontSize = Math.min(8, cellSizeMM * 0.5);
+
+  // --- Pass 1: Draw bindi circle guides (only non-empty cells) ---
+  doc.setDrawColor(100, 100, 100);
+  doc.setLineWidth(0.2);
+  
+  for (let r = 0; r < rows; r++) {
+    const isOdd = (r % 2 === 1);
+    const hexShift = isOdd ? cellSizeMM * 0.5 : 0;
+    
+    for (let c = 0; c < cols; c++) {
+      const level = state.gridData[r][c];
+      if (level <= 0) continue; // Skip empty cells entirely
+      
+      const centerX = offsetX + c * cellSizeMM + cellSizeMM / 2 + hexShift;
+      const centerY = offsetY + r * hexRowHeightMM + cellSizeMM / 2;
+      const bindiRadiusMM = state.bindiSizes[level - 1] / 2;
+      
+      doc.circle(centerX, centerY, bindiRadiusMM);
+    }
+  }
+  
+  // --- Pass 2: Draw level numbers (only non-empty cells) ---
+  doc.setFontSize(fontSize);
+  doc.setTextColor(60, 60, 60);
+  
+  for (let r = 0; r < rows; r++) {
+    const isOdd = (r % 2 === 1);
+    const hexShift = isOdd ? cellSizeMM * 0.5 : 0;
+    
+    for (let c = 0; c < cols; c++) {
+      const level = state.gridData[r][c];
+      if (level <= 0) continue;
+      
+      const centerX = offsetX + c * cellSizeMM + cellSizeMM / 2 + hexShift;
+      const centerY = offsetY + r * hexRowHeightMM + cellSizeMM / 2;
+      
+      doc.text(
+        String(level),
+        centerX,
+        centerY + 0.3,
+        { align: 'center' }
+      );
+    }
+  }
+  
+  // Add a small metadata label at the bottom-right corner
+  doc.setFontSize(6);
+  doc.setTextColor(180, 180, 180);
+  doc.text(
+    `Bindi Portrait Template | ${canvasWidthMM}mm \u00d7 ${canvasHeightMM}mm | ${cols}\u00d7${rows} grid | Cell: ${cellSizeMM.toFixed(1)}mm`,
+    canvasWidthMM - 2,
+    canvasHeightMM - 2,
+    { align: 'right' }
+  );
+  
+  // Generate filename
+  const widthCm = Math.round(canvasWidthMM / 10);
+  const heightCm = Math.round(canvasHeightMM / 10);
+  const filename = `bindi-template-${widthCm}x${heightCm}cm-fullsize.pdf`;
+  
+  // Save the PDF using manual blob download (more reliable than doc.save)
+  const pdfBlob = doc.output('blob');
+  const blobUrl = URL.createObjectURL(pdfBlob);
+  const downloadLink = document.createElement('a');
+  downloadLink.href = blobUrl;
+  downloadLink.download = filename;
+  downloadLink.style.display = 'none';
+  document.body.appendChild(downloadLink);
+  downloadLink.click();
+  document.body.removeChild(downloadLink);
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+
+  } catch (err) {
+    console.error('Error generating PDF:', err);
+    alert('Error generating PDF: ' + err.message);
+  }
+}
 // ==========================================================================
 // COLOR HELPERS
 // ==========================================================================
